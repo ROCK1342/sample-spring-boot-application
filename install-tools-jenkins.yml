@@ -1,0 +1,98 @@
+---
+- name: Setup Jenkins CI Environment on Amazon Linux EC2
+  hosts: all
+  become: yes
+
+  vars:
+    maven_version: "3.9.6"
+    maven_download_url: "https://downloads.apache.org/maven/maven-3/{{ maven_version }}/binaries/apache-maven-{{ maven_version }}-bin.tar.gz"
+    maven_install_dir: "/opt/maven"
+
+  tasks:
+    - name: Update all packages
+      ansible.builtin.yum:
+        name: "*"
+        state: latest
+
+    - name: Install Java (Amazon Corretto 17)
+      ansible.builtin.yum:
+        name: java-17-amazon-corretto
+        state: present
+
+    - name: Add Jenkins repository
+      ansible.builtin.get_url:
+        url: https://pkg.jenkins.io/redhat-stable/jenkins.repo
+        dest: /etc/yum.repos.d/jenkins.repo
+
+    - name: Import Jenkins repository key
+      ansible.builtin.rpm_key:
+        state: present
+        key: https://pkg.jenkins.io/redhat-stable/jenkins.io-2023.key
+
+    - name: Install Jenkins
+      ansible.builtin.yum:
+        name: jenkins
+        state: present
+
+    - name: Install Docker
+      ansible.builtin.yum:
+        name: docker
+        state: present
+
+    - name: Install latest kubectl
+      shell: |
+        KUBECTL_VERSION=$(curl -L -s https://dl.k8s.io/release/stable.txt)
+        curl -LO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+        install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+      args:
+        creates: /usr/local/bin/kubectl
+
+    - name: Download Maven
+      ansible.builtin.get_url:
+        url: "{{ maven_download_url }}"
+        dest: "/tmp/apache-maven-{{ maven_version }}-bin.tar.gz"
+
+    - name: Ensure Maven install directory exists
+      ansible.builtin.file:
+        path: /opt/maven
+        state: directory
+        mode: '0755'
+
+    - name: Extract Maven
+      ansible.builtin.unarchive:
+        src: "/tmp/apache-maven-{{ maven_version }}-bin.tar.gz"
+        dest: "/opt/maven"
+        remote_src: yes
+        creates: "/opt/maven/apache-maven-{{ maven_version }}"
+
+    - name: Set Maven symlink
+      ansible.builtin.file:
+        src: "{{ maven_install_dir }}/apache-maven-{{ maven_version }}"
+        dest: "/opt/maven/latest"
+        state: link
+
+    - name: Add Maven to PATH
+      ansible.builtin.copy:
+        dest: /etc/profile.d/maven.sh
+        content: |
+          export M2_HOME=/opt/maven/latest
+          export PATH=${M2_HOME}/bin:${PATH}
+        mode: '0755'
+
+    - name: Start and enable Docker
+      ansible.builtin.systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Start and enable Jenkins
+      ansible.builtin.systemd:
+        name: jenkins
+        state: started
+        enabled: yes
+
+    - name: Add Jenkins user to Docker group
+      ansible.builtin.user:
+        name: jenkins
+        groups: docker
+        append: yes
